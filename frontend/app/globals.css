@@ -1,0 +1,180 @@
+/**
+ * frontend/app/globals.css
+ * -------------------------
+ * Global styles, design tokens, and animations for the platform.
+ */
+
+@import "tailwindcss";
+
+
+
+/* ─── CSS Custom Properties (Design Tokens) ────────────────── */
+:root {
+  /* Color palette */
+  --color-bg-primary:    #060a14;
+  --color-bg-secondary:  #0d1526;
+  --color-bg-card:       rgba(13, 21, 38, 0.6);
+  --color-border:        rgba(99, 179, 237, 0.15);
+  --color-border-hover:  rgba(99, 179, 237, 0.4);
+
+  /* Brand accents */
+  --color-cyan:          #22d3ee;
+  --color-cyan-dim:      #0891b2;
+  --color-purple:        #a855f7;
+  --color-purple-dim:    #7c3aed;
+  --color-emerald:       #10b981;
+
+  /* Text */
+  --color-text-primary:  #f0f9ff;
+  --color-text-secondary:#94a3b8;
+  --color-text-muted:    #475569;
+
+  /* Gradients */
+  --gradient-hero: linear-gradient(135deg, #22d3ee 0%, #a855f7 50%, #10b981 100%);
+  --gradient-card: linear-gradient(135deg, rgba(34, 211, 238, 0.05) 0%, rgba(168, 85, 247, 0.05) 100%);
+  --gradient-glow: radial-gradient(ellipse at center, rgba(34, 211, 238, 0.15) 0%, transparent 70%);
+
+  /* Typography */
+  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+/* ─── Base Reset ────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ─── Custom Scrollbar ─────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--color-bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--color-cyan-dim); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-cyan); }
+
+/* ─── Glassmorphism Card ───────────────────────────────────── */
+.glass-card {
+  background: var(--color-bg-card);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
+  border-radius: 16px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+}
+
+.glass-card:hover {
+  border-color: var(--color-border-hover);
+  box-shadow: 0 0 30px rgba(34, 211, 238, 0.08), 0 20px 40px rgba(0, 0, 0, 0.4);
+  transform: translateY(-4px);
+}
+
+/* ─── Gradient Text ────────────────────────────────────────── */
+.gradient-text {
+  background: var(--gradient-hero);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Glowing Button ───────────────────────────────────────── */
+.btn-glow {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--color-cyan-dim), var(--color-purple-dim));
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  transition: all 0.3s ease;
+}
+
+.btn-glow::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, var(--color-cyan), var(--color-purple));
+  opacity: 0;
+  transition: opacity 0.3s ease;
+}
+
+.btn-glow:hover::before { opacity: 1; }
+
+.btn-glow:hover {
+  box-shadow: 0 0 25px rgba(34, 211, 238, 0.4), 0 0 50px rgba(168, 85, 247, 0.2);
+  transform: translateY(-2px) scale(1.02);
+}
+
+.btn-glow > * { position: relative; z-index: 1; }
+
+/* ─── Animated Grid Background ─────────────────────────────── */
+.bg-grid {
+  background-image:
+    linear-gradient(rgba(34, 211, 238, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(34, 211, 238, 0.03) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+
+/* ─── Pulsing Glow Orb ─────────────────────────────────────── */
+.glow-orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  animation: orb-pulse 8s ease-in-out infinite;
+}
+
+@keyframes orb-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(1); }
+  50% { opacity: 0.6; transform: scale(1.1); }
+}
+
+/* ─── Floating Animation ───────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-12px); }
+}
+
+.animate-float {
+  animation: float 5s ease-in-out infinite;
+}
+
+/* ─── Fade-in-up Animation ─────────────────────────────────── */
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.7s ease forwards;
+}
+
+.animate-delay-100 { animation-delay: 0.1s; opacity: 0; }
+.animate-delay-200 { animation-delay: 0.2s; opacity: 0; }
+.animate-delay-300 { animation-delay: 0.3s; opacity: 0; }
+.animate-delay-400 { animation-delay: 0.4s; opacity: 0; }
+.animate-delay-500 { animation-delay: 0.5s; opacity: 0; }
+
+/* ─── Scan Line Animation (decorative) ─────────────────────── */
+@keyframes scan-line {
+  0% { top: 0%; opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+
+/* ─── Severity Badge Colors ────────────────────────────────── */
+.badge-critical { background: rgba(239, 68, 68, 0.2); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+.badge-high     { background: rgba(249, 115, 22, 0.2); color: #fb923c; border: 1px solid rgba(249, 115, 22, 0.3); }
+.badge-medium   { background: rgba(234, 179, 8, 0.2);  color: #fbbf24; border: 1px solid rgba(234, 179, 8, 0.3); }
+.badge-low      { background: rgba(34, 197, 94, 0.2);  color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }
+.badge-info     { background: rgba(99, 179, 237, 0.2); color: #7dd3fc; border: 1px solid rgba(99, 179, 237, 0.3); }
