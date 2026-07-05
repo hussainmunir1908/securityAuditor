@@ -34,6 +34,9 @@ interface Env {
 
   // The frontend URL — used for post-auth redirects
   FRONTEND_URL: string;
+
+  // OpenAI API Key for embeddings and LLM analysis (optional for now)
+  OPENAI_API_KEY?: string;
 }
 
 /**
@@ -72,4 +75,6 @@ export const env: Env = {
   JWT_SECRET: requireEnv('JWT_SECRET'),
 
   FRONTEND_URL: process.env['FRONTEND_URL'] ?? 'http://localhost:3000',
+
+  OPENAI_API_KEY: process.env['OPENAI_API_KEY'],
 };

@@ -22,6 +22,7 @@ import { env } from './config/env';
 // Route handlers
 import authRouter from './routes/auth';
 import ingestRouter from './routes/ingest';
+import uploadRouter from './routes/upload';
 import scanRouter from './routes/scan';
 
 const app: Application = express();
@@ -69,9 +70,10 @@ app.get('/health', (_req: Request, res: Response): void => {
   });
 });
 
-// Mount routers under the /api prefix
+// Mount API routes
 app.use('/api/auth', authRouter);
 app.use('/api/ingest', ingestRouter);
+app.use('/api/ingest/upload', uploadRouter); // Mount upload handler
 app.use('/api/scan', scanRouter);
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
