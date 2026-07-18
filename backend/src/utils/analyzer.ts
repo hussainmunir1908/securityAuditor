@@ -127,7 +127,7 @@ export function buildMapperPrompt(chunkContent: string, filePath: string): strin
 
 // ─── Auditor Agent ────────────────────────────────────────────────────────────
 
-export const AUDITOR_SYSTEM = `You are a security code auditor. Find security vulnerabilities in code. Return ONLY a JSON array.`;
+export const AUDITOR_SYSTEM = `You are a security code auditor. Find security vulnerabilities in code. Format your response exactly using the specified VULNERABILITY template block. Do not use JSON.`;
 
 export function buildAuditorPrompt(
   chunkContent: string,
@@ -139,9 +139,9 @@ export function buildAuditorPrompt(
   // Limit code length to avoid overwhelming a 1.5B model
   const snippet = chunkContent.substring(0, 1200);
   
-  // Only include the most relevant rule titles (not full content) to save tokens
+  // Include actual pattern-matching guidance from rule contents
   const ruleHints = rules.length > 0
-    ? `\nSecurity rules to check: ${rules.map(r => r.rule_id + ':' + r.title).join('; ')}`
+    ? `\nSecurity rules to check:\n${rules.map(r => `- ${r.rule_id}: ${r.title}\n  ${r.content.substring(0, 200)}`).join('\n')}`
     : '';
 
   return (
@@ -149,41 +149,77 @@ export function buildAuditorPrompt(
     `File: ${filePath} (line ${startLine})` +
     ruleHints + `\n\n` +
     `Code:\n${snippet}\n\n` +
-    `Return a JSON array of vulnerabilities found. Each item must have:\n` +
-    `- rule_id: string (e.g. "CWE-89", "OWASP-A03")\n` +
-    `- severity: "critical"|"high"|"medium"|"low"\n` +
-    `- description: string\n` +
-    `- remediation: string\n` +
-    `- line_number: number or null\n` +
-    `- snippet: string or null\n\n` +
-    `If no vulnerabilities found, return []\n` +
-    `JSON array:`
+    `If you find vulnerabilities, output one block per vulnerability formatted EXACTLY like this:\n` +
+    `VULNERABILITY: <Rule ID or CWE Token> <Short Title>\n` +
+    `SEVERITY: <CRITICAL | HIGH | MEDIUM | LOW>\n` +
+    `CVSS: <0.0 to 10.0>\n` +
+    `ATTACK: <detailed description of the exploit>\n` +
+    `FIX:\n` +
+    `<code fix instructions>\n\n` +
+    `If multiple vulnerabilities exist, output multiple blocks separated by a blank line.\n` +
+    `If no vulnerabilities found, output exactly: NONE`
   );
 }
 
 const VALID_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
 
-export function validateFinding(obj: Record<string, unknown>): ScanFinding | null {
-  const rule_id     = typeof obj['rule_id'] === 'string' ? obj['rule_id'].trim() : null;
-  const severity    = typeof obj['severity'] === 'string' ? obj['severity'].toLowerCase().trim() : null;
-  const description = typeof obj['description'] === 'string' ? obj['description'].trim() : null;
-  const remediation = typeof obj['remediation'] === 'string' ? obj['remediation'].trim() : null;
-
-  if (!rule_id || !severity || !description || !remediation || !VALID_SEVERITIES.has(severity)) {
-    if (Object.keys(obj).length > 0) {
-      console.warn(`[validateFinding] Rejected: rule_id=${rule_id}, sev=${severity}, desc=${!!description}, rem=${!!remediation}`);
-    }
-    return null;
+export function parseVulnerabilityBlocks(raw: string): ScanFinding[] {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed === 'NONE' || trimmed === '[]') {
+    return [];
   }
 
-  return {
-    rule_id,
-    severity: severity as ScanFinding['severity'],
-    description,
-    remediation,
-    line_number: typeof obj['line_number'] === 'number' ? Math.round(obj['line_number']) : null,
-    snippet: typeof obj['snippet'] === 'string' ? obj['snippet'].substring(0, 500) : null,
-  };
+  // Split by double blank lines (or multiple) to isolate blocks
+  const blocks = trimmed.split(/\n\s*\n+/);
+  const findings: ScanFinding[] = [];
+
+  for (const block of blocks) {
+    // The regex approach to extract fields from the template
+    const vulnMatch = block.match(/VULNERABILITY:\s*([^\n]+)/i);
+    const sevMatch = block.match(/SEVERITY:\s*([^\n]+)/i);
+    const cvssMatch = block.match(/CVSS:\s*([^\n]+)/i);
+    
+    // We want ATTACK as everything from ATTACK: to FIX:
+    const attackMatch = block.match(/ATTACK:\s*([\s\S]*?)(?:\nFIX:|$)/i);
+    // FIX is everything after FIX:
+    const fixMatch = block.match(/FIX:\s*([\s\S]*)$/i);
+
+    if (!vulnMatch || !attackMatch || !fixMatch) {
+      console.warn(`[parseVulnerabilityBlocks] Malformed block skipped. Block starts with: ${block.substring(0, 50)}...`);
+      continue;
+    }
+
+    const vulnLine = vulnMatch[1].trim();
+    // Try to extract CWE token or rule ID (e.g., "CWE-89 SQL Injection" -> "CWE-89")
+    const rule_id = vulnLine.split(/\s+/)[0]; 
+
+    let rawSeverity = sevMatch ? sevMatch[1].toLowerCase().trim() : 'medium';
+    if (!VALID_SEVERITIES.has(rawSeverity)) {
+      console.warn(`[parseVulnerabilityBlocks] Unrecognized severity "${rawSeverity}", defaulting to medium`);
+      rawSeverity = 'medium';
+    }
+
+    let confidence: number | null = null;
+    if (cvssMatch) {
+      const cvssVal = parseFloat(cvssMatch[1].trim());
+      if (!isNaN(cvssVal) && cvssVal >= 0 && cvssVal <= 10) {
+        confidence = cvssVal / 10;
+      }
+    }
+
+    findings.push({
+      rule_id,
+      severity: rawSeverity as ScanFinding['severity'],
+      description: attackMatch[1].trim(),
+      remediation: fixMatch[1].trim(),
+      line_number: null, // Not provided by the model natively
+      snippet: null,     // Not provided by the model natively
+      cwe_id: /^CWE-\d+/i.test(rule_id) ? rule_id.toUpperCase() : null,
+      confidence,
+    });
+  }
+
+  return findings;
 }
 
 // ─── Remediation Agent ────────────────────────────────────────────────────────

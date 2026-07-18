@@ -13,7 +13,7 @@ import { retrieveRelevantRules } from './rag';
 import {
   ollamaGenerate, MAX_NEW_TOKENS,
   MAPPER_SYSTEM, buildMapperPrompt, extractJsonObject,
-  AUDITOR_SYSTEM, buildAuditorPrompt, extractJsonArray, validateFinding,
+  AUDITOR_SYSTEM, buildAuditorPrompt, parseVulnerabilityBlocks,
   REMEDIATION_SYSTEM, buildRemediationPrompt
 } from './analyzer';
 import { CodeChunk, SecurityRule, ScanFinding } from '../types';
@@ -133,12 +133,7 @@ async function auditorNode(state: ScanStateType): Promise<Partial<ScanStateType>
       return { vulnerabilities: [] };
     }
 
-    const rawItems = extractJsonArray(raw);
-    console.log(`[auditor] 📋 ${rawItems.length} raw items from model`);
-
-    const findings = rawItems
-      .map(item => validateFinding(item as Record<string, unknown>))
-      .filter((f): f is ScanFinding => f !== null);
+    const findings = parseVulnerabilityBlocks(raw);
 
     console.log(`[auditor] ${findings.length > 0 ? '🚨' : '✅'} ${findings.length} findings for ${chunk.file_path}`);
     for (const f of findings) {

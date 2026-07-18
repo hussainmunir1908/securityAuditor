@@ -128,6 +128,8 @@ export interface ScanFinding {
   remediation: string;
   line_number: number | null;
   snippet: string | null;
+  cwe_id?: string | null;
+  confidence?: number | null;
 }
 
 // ─── Express Request Augmentation ─────────────────────────────────────────────

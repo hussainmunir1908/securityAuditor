@@ -305,6 +305,8 @@ async function runAutoScan(
         description:   f.description,
         remediation:   f.remediation,
         ai_coder_prompt: f.ai_prompt,
+        cwe_id:        f.cwe_id ?? null,
+        confidence:    f.confidence ?? null,
       }));
 
       // Insert in batches of 50 to avoid request size limits
