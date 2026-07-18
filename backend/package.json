@@ -11,6 +11,9 @@
     "seed:rules": "ts-node-dev --transpile-only scripts/seedVectors.ts"
   },
   "dependencies": {
+    "@huggingface/inference": "^4.13.23",
+    "@langchain/core": "^1.2.3",
+    "@langchain/langgraph": "^1.4.8",
     "@octokit/rest": "^22.0.1",
     "@supabase/supabase-js": "^2.45.4",
     "adm-zip": "^0.5.18",
@@ -21,8 +24,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
-    "multer": "^2.2.0",
-    "openai": "^6.45.0"
+    "multer": "^2.2.0"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

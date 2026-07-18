@@ -1,362 +1,43 @@
 ================================================================================
-  AGENTIC RAG SECURITY AUDITOR (RAGSec) — SESSION CONTEXT FILE
-  Created: 2026-07-06
-  Purpose: Full summary of work completed so we can resume exactly from here.
+  AGENTIC RAG SECURITY AUDITOR (RAGSec) — CONTEXT FILE
+  Updated: 2026-07-17
 ================================================================================
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 1. TECH STACK & ARCHITECTURE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  - Frontend: Next.js 16 (App Router), React 19, Tailwind CSS v4, TypeScript
+  - Backend: Node.js, Express 4, TypeScript
+  - Database: Supabase (Postgres + pgvector)
+  - Auth: Custom GitHub OAuth2 loop (JWT in HttpOnly cookie). No Supabase Auth.
+  - Repo URL: https://github.com/hussainmunir1908/securityAuditor
+  - Models:
+    - Embeddings: Hugging Face (sentence-transformers/all-MiniLM-L6-v2, 384-dim)
+    - SAST Analyzer: Local Ollama (qwen-security:latest, 1.5B Q4_K_M)
 
-  Frontend  : Next.js 16 (App Router), React 19, Tailwind CSS v4, TypeScript
-  Backend   : Node.js, Express 4, TypeScript, ts-node-dev
-  Database  : Supabase (Postgres + pgvector extension)
-  Auth      : Custom GitHub OAuth2 loop — backend issues a JWT stored as HttpOnly cookie.
-              NO Passport.js. NO Supabase Auth. Supabase is used only as a DB client
-              (anon key + RLS policies for data isolation).
-  Embeddings: OpenAI text-embedding-3-small (1536 dimensions)
-              — currently mocked with zero vectors until API key is added.
-  Monorepo  : npm workspaces. Root package.json declares "workspaces": ["frontend", "backend"].
-  Repo URL  : https://github.com/hussainmunir1908/securityAuditor
+2. CORE FEATURES COMPLETED
+  - Foundation: Monorepo with Express backend and Next.js frontend, typed envs.
+  - Database: pgvector setup, tables created (profiles, repositories, scan_results, code_chunks, security_rules) with 384 dimensions.
+  - Ingestion: Auto-chunks GitHub repos (or ZIPs), embeds, and saves to code_chunks. Single-repo flow implemented (auto-clears old data). MAX_FILES=500.
+  - Knowledge Base: Seeded 30+ security rules (OWASP, CWE, JS/Node.js specific patterns) using admin service_role.
+  - SAST Pipeline (LangGraph):
+    1. Mapper Agent: Detects language/frameworks/sensitivity.
+    2. RAG Retriever: Fetches top-K security rules via cosine similarity (bypasses RLS using `supabaseAdmin`).
+    3. Auditor Agent: Finds vulnerabilities using the rules. Uses `/api/generate` with raw ChatML template (optimized for 1.5B completion models).
+    4. Remediation Agent: Generates developer fix prompts.
+  - UI: Glassmorphism landing page, single-repo dashboard with pipeline progress indicator (Ingest → Scan → Results).
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-2. COMPLETE PROJECT STRUCTURE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. KEY SECRETS & ENV (.env is gitignored)
+  - NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY (Safe for frontend)
+  - GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / JWT_SECRET (Backend only)
+  - HUGGING_FACE_API_KEY (Backend only, for embeddings)
+  - SUPABASE_SERVICE_ROLE_KEY (Backend only, used for admin scripts and `supabaseAdmin` for RAG).
 
-  Project/
-  ├── .env                                  ← Root env file (NOT in git). Contains:
-  │                                            NEXT_PUBLIC_SUPABASE_URL
-  │                                            NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
-  │                                            GITHUB_CLIENT_ID
-  │                                            GITHUB_CLIENT_SECRET
-  │                                            JWT_SECRET
-  │                                            FRONTEND_URL=http://localhost:3000
-  │                                            OPENAI_API_KEY   ← OPTIONAL (leave blank for mocked embeddings)
-  ├── .gitignore
-  ├── package.json                          ← npm workspace root
-  ├── package-lock.json
-  │
-  ├── backend/
-  │   ├── package.json                      ← All backend deps. Scripts: dev, build, start, seed:rules
-  │   ├── tsconfig.json
-  │   ├── scripts/
-  │   │   └── seedVectors.ts                ← Seeds security_rules table with OWASP/CWE data + embeddings
-  │   └── src/
-  │       ├── index.ts                      ← Express server entrypoint. Boots on :5000
-  │       ├── config/
-  │       │   ├── env.ts                    ← Typed, validated env loader. OPENAI_API_KEY is optional.
-  │       │   └── supabase.ts               ← Supabase singleton client
-  │       ├── middleware/
-  │       │   └── auth.ts                   ← JWT verify middleware (reads 'access_token' cookie OR Bearer header)
-  │       ├── routes/
-  │       │   ├── auth.ts                   ← [COMPLETE] Full GitHub OAuth2 loop
-  │       │   ├── ingest.ts                 ← [COMPLETE] POST /api/ingest/github
-  │       │   ├── upload.ts                 ← [COMPLETE] POST /api/ingest/upload (zip file)
-  │       │   └── scan.ts                   ← [STUB - Step 3] All endpoints return 501
-  │       ├── types/
-  │       │   └── index.ts                  ← Shared TS interfaces + Express augmentation (req.user)
-  │       └── utils/
-  │           ├── chunker.ts                ← [COMPLETE] Structural code chunker
-  │           └── embeddings.ts             ← [COMPLETE] OpenAI embedding util with mock fallback
-  │
-  ├── frontend/
-  │   ├── package.json
-  │   ├── tsconfig.json
-  │   ├── next.config.ts
-  │   ├── postcss.config.mjs
-  │   ├── eslint.config.mjs
-  │   ├── .env.local                        ← Frontend-specific env. Contains NEXT_PUBLIC_ vars.
-  │   ├── proxy.ts                          ← Next.js 16 route proxy (was middleware.ts). Guards /dashboard.
-  │   ├── app/
-  │   │   ├── layout.tsx                    ← Root layout. Loads Inter + JetBrains Mono via next/font.
-  │   │   ├── globals.css                   ← Tailwind v4 import + custom design tokens + animations
-  │   │   ├── page.tsx                      ← Landing page shell (Server Component)
-  │   │   ├── auth/callback/page.tsx        ← Post-OAuth loading page
-  │   │   └── dashboard/page.tsx            ← Protected dashboard (requires auth cookie)
-  │   ├── components/
-  │   │   └── LandingPageClient.tsx         ← Animated landing page (Client Component)
-  │   ├── contexts/
-  │   │   └── AuthContext.tsx               ← Auth state provider + useAuth hook
-  │   └── utils/supabase/
-  │       ├── client.ts                     ← Browser Supabase client (createBrowserClient)
-  │       ├── server.ts                     ← Server Component Supabase client (createServerClient)
-  │       └── middleware.ts                 ← Supabase middleware session refresher
-  │
-  └── supabase/
-      └── migrations/
-          ├── 001_init.sql                  ← [RUN ✓] pgvector, profiles, repositories, scan_results, code_chunks + RLS
-          └── 002_security_rules.sql        ← [NEEDS TO BE RUN] security_rules table + HNSW index + RLS
+4. RECENT FIXES & DISCOVERIES
+  - Zero-vulnerability bug: Fixed by switching to Ollama `/api/generate` with raw ChatML (`<|im_start|>`) because `qwen-security` is a 1.5B completion-only model. Prompts were drastically simplified.
+  - Zero-rules bug: Fixed by using `supabaseAdmin` (service_role key) for the `match_security_rules` RPC to bypass RLS issues during RAG retrieval.
+  - Dashboard getting stuck: Added `pipeline_stage` to the backend `/api/ingest/active` endpoint to reliably distinguish between "ingesting", "scanning", and "completed". `chunkCount` is now passed to the `ScanViewer`.
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-3. SUPABASE DATABASE SCHEMA
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  public.profiles           ← GitHub user data, login, avatar_url, github_access_token, github_id
-  public.repositories       ← repo_url, repo_name, user_id (FK profiles), ingestion_status enum
-                               ingestion_status values: 'pending' | 'processing' | 'completed' | 'failed'
-  public.scan_results       ← repository_id (FK), rule_id, severity, description, remediation,
-                               file_path, start_line, end_line, code_snippet
-  public.code_chunks        ← repository_id (FK), file_path, start_line, end_line, content,
-                               language, chunk_index, embedding vector(1536)
-  public.security_rules     ← rule_id (unique), title, content, severity, owasp_category, cwe_id,
-                               embedding vector(1536)
-
-  All tables: RLS ENABLED. Users can only read/write their own data.
-  Vector indexes: HNSW with vector_cosine_ops on code_chunks.embedding and security_rules.embedding.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-4. BACKEND API ROUTES (COMPLETE MAP)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  AUTH (no auth required):
-    GET  /api/auth/github              → Redirects user to GitHub OAuth consent page
-    GET  /api/auth/github/callback     → Handles GitHub OAuth callback, issues JWT cookie
-    GET  /api/auth/me                  → Returns current user profile from JWT
-    POST /api/auth/logout              → Clears the access_token cookie
-
-  INGESTION (requireAuth middleware):
-    POST /api/ingest/github            → Body: { repositoryId }. Ingests via Octokit. Returns 202.
-    GET  /api/ingest/status/:repoId    → Returns ingestion_status for a repository
-    GET  /api/ingest/repositories      → Lists all repositories for the current user
-
-  UPLOAD (requireAuth middleware):
-    POST /api/ingest/upload            → multipart/form-data: file (.zip) + repositoryName. Returns 202.
-
-  SCAN (requireAuth middleware — all STUB):
-    POST /api/scan/start               → [STUB] Will trigger SAST scan on a completed repository
-    GET  /api/scan/results/:scanId     → [STUB] Will return vulnerability report
-    GET  /api/scan/history             → [STUB] Will list all past scans
-    GET  /api/scan/metrics/:scanId     → [STUB] Will return aggregate metrics
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-5. STEP 1 — COMPLETED WORK (Foundation & Auth)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  [x] Monorepo structure with npm workspaces
-  [x] Root .gitignore (excludes .env, node_modules, .next, dist)
-  [x] Backend: Express server with CORS, Morgan, cookie-parser middleware
-  [x] Backend: Typed env loader (fail-fast for missing vars; OPENAI_API_KEY optional)
-  [x] Backend: Supabase singleton client using anon key
-  [x] Backend: Full GitHub OAuth2 loop in routes/auth.ts:
-        - GET /github   → CSRF state + redirect to GitHub
-        - GET /github/callback → exchange code for token, fetch user, upsert profile, sign JWT, set cookie
-  [x] Backend: JWT auth middleware (reads HttpOnly cookie OR Bearer header)
-  [x] Backend: Stub routes for /scan (all return 501)
-  [x] Backend: TypeScript compiles with 0 errors
-  [x] Database: 001_init.sql written (pgvector, 4 tables, HNSW indexes, RLS)
-  [x] Frontend: Next.js 16 + React 19 + Tailwind v4 bootstrapped via create-next-app
-  [x] Frontend: Inter + JetBrains Mono fonts loaded via next/font/google
-  [x] Frontend: AuthContext + useAuth hook for client-side auth state
-  [x] Frontend: Landing page (animated, glassmorphism, glow orbs)
-  [x] Frontend: /dashboard protected page
-  [x] Frontend: /auth/callback page
-  [x] Frontend: proxy.ts (Next.js 16 route proxy) guards /dashboard from unauthenticated access
-  [x] Frontend: Supabase SSR utilities (client.ts, server.ts, middleware.ts)
-  [x] GitHub Push: Committed 41 files to https://github.com/hussainmunir1908/securityAuditor
-
-  KNOWN FIXES APPLIED DURING STEP 1:
-  - globals.css: Removed @import url(fonts.googleapis.com) — violated CSS @import ordering in Tailwind v4.
-    Fonts now loaded via next/font only. Correct pattern.
-  - middleware.ts → proxy.ts: Next.js 16 renamed the file convention from "middleware" to "proxy".
-    The exported function must also be named `proxy` (not `middleware`).
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-6. STEP 2 — COMPLETED WORK (Data Ingestion & The Knowledge Base)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  [x] Installed new backend packages: openai, @octokit/rest, multer, adm-zip
-      + dev types: @types/multer, @types/adm-zip
-  [x] supabase/migrations/002_security_rules.sql created
-      Creates: security_rules table, RLS policy, HNSW embedding index
-  [x] backend/src/utils/embeddings.ts
-      - Wraps OpenAI SDK for generating 1536-dim embeddings
-      - MOCK FALLBACK: if OPENAI_API_KEY is absent, returns array of 1536 zeros
-        (system still works; embeddings won't be meaningful but won't crash)
-  [x] backend/scripts/seedVectors.ts
-      - Standalone script to populate security_rules with OWASP Top 10 + CWE rules
-      - Run with: cd backend && npm run seed:rules
-  [x] backend/src/utils/chunker.ts — Structural code chunker:
-      - C-like languages (JS/TS/Java/C#/C++/Go): tracks brace { } depth
-        to identify function/class boundaries
-      - Python: uses indentation heuristics for def/class blocks
-      - Fallback: line-count based chunking for unknown file types
-      - Failsafe: forces chunk break at MAX_CHUNK_LINES (150) for giant blocks
-  [x] backend/src/routes/ingest.ts — Full GitHub ingestion implementation:
-      - Fetches repo + user's github_access_token from Supabase
-      - Sets status → 'processing' immediately
-      - Returns 202 to client (async processing)
-      - Uses Octokit to fetch full file tree recursively
-      - Filters: ignores binaries, node_modules, .git, .next, lock files
-      - Chunks each file via chunker.ts, embeds via embeddings.ts
-      - Inserts into code_chunks table with file_path, start/end lines, language, chunk_index
-      - Sets status → 'completed' or 'failed'
-  [x] backend/src/routes/upload.ts — Zip upload ingestion:
-      - multer with memory storage (no disk writes), 50MB limit
-      - adm-zip for in-memory zip extraction
-      - Same filtering + chunking + embedding + insertion pipeline as GitHub route
-      - Multipart form: fields: `file` (zip) + `repositoryName`
-  [x] backend/src/index.ts — Mounted uploadRouter at /api/ingest/upload
-  [x] backend/package.json — Added "seed:rules" npm script
-  [x] Backend TypeScript: 0 errors (verified with tsc --noEmit)
-
-  OPENAI_API_KEY STATUS:
-  - Currently OPTIONAL. If missing from .env, all embeddings are mocked (zeros).
-  - The chunking, ingestion, and DB insertion all work without it.
-  - Similarity search in Step 3 won't return meaningful results until real embeddings are stored.
-  - When ready: add OPENAI_API_KEY=sk-... to root .env, restart backend, re-run seed:rules.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-7. PENDING MANUAL ACTIONS (YOU MUST DO THESE)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  [ ] RUN SQL MIGRATION 001 (if not already done):
-      Go to Supabase Dashboard → SQL Editor → paste + run:
-      c:\University\Internship\Project\supabase\migrations\001_init.sql
-
-  [ ] RUN SQL MIGRATION 002 (not yet run):
-      Go to Supabase Dashboard → SQL Editor → paste + run:
-      c:\University\Internship\Project\supabase\migrations\002_security_rules.sql
-
-  [ ] CONFIGURE GITHUB OAUTH APP:
-      GitHub → Settings → Developer Settings → OAuth Apps → your app
-      Set Authorization Callback URL to:
-        http://localhost:5000/api/auth/github/callback
-      (Must match GITHUB_CALLBACK_URL in .env)
-
-  [ ] OPTIONAL — ADD OPENAI KEY (when ready for real embeddings):
-      Add to root .env:  OPENAI_API_KEY=sk-...
-      Then restart backend and run: cd backend && npm run seed:rules
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-8. WHAT AWAITS — STEP 3: THE SAST SCANNING ENGINE
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  This is the core intelligence of the platform. Currently all /api/scan/* endpoints
-  return 501 Not Implemented. Step 3 will flesh these out fully.
-
-  WHAT NEEDS TO BE BUILT:
-
-  A. RAG Retrieval Pipeline (backend/src/utils/rag.ts — to be created)
-     - For each code chunk in a repository, use pgvector cosine similarity search
-       to find the most relevant security_rules from the knowledge base.
-     - SQL: SELECT * FROM security_rules ORDER BY embedding <=> $1 LIMIT 5
-     - This links vulnerable code patterns to their OWASP/CWE definitions.
-
-  B. LLM Analysis Engine (backend/src/utils/analyzer.ts — to be created)
-     - Feed the code chunk + retrieved security rules into an LLM (GPT-4o or similar).
-     - Craft a structured prompt that instructs the model to identify:
-         → Vulnerability type (maps to rule_id / CWE)
-         → Severity: critical / high / medium / low
-         → Exact line range
-         → Description of the vulnerability
-         → Concrete remediation advice
-     - Parse the LLM response into a ScanFinding object.
-
-  C. scan.ts Route Implementation (backend/src/routes/scan.ts — to be overhauled)
-     - POST /api/scan/start:
-         1. Validate repositoryId + check ingestion_status === 'completed'
-         2. Fetch all code_chunks for the repository
-         3. For each chunk → RAG retrieval → LLM analysis → collect findings
-         4. Insert findings into scan_results table
-         5. Return scanId
-     - GET /api/scan/results/:scanId — fetch scan_results by scan_id
-     - GET /api/scan/history         — list all scans for user
-     - GET /api/scan/metrics/:scanId — count findings grouped by severity + owasp_category
-
-  D. Optional: Real-time Progress via SSE (Server-Sent Events)
-     - Stream scan progress to the frontend as each file is analyzed.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-9. WHAT AWAITS — STEP 4: FRONTEND DASHBOARD & SCAN UI
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  The frontend /dashboard/page.tsx currently shows a placeholder.
-  Step 4 will build the full UI:
-
-  A. Repository Management Panel
-     - Form to submit GitHub repo URL (owner/repo format)
-     - OR drag-and-drop zip file upload area
-     - Progress indicator polling /api/ingest/status/:repoId
-
-  B. Scan Initiation UI
-     - Button to trigger a scan on any completed repository
-     - Real-time progress bar (polling or SSE)
-
-  C. Vulnerability Report View
-     - Severity-grouped findings list (Critical, High, Medium, Low)
-     - Per-finding: file path, line range, description, remediation, OWASP tag, CWE link
-     - Code snippet with syntax highlighting
-
-  D. Dashboard Metrics
-     - Summary stats: total scans, total vulnerabilities, breakdown by severity
-     - Charts (e.g., pie chart by OWASP category)
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-10. WHAT AWAITS — STEP 5 (OPTIONAL): UI REDESIGN
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  The user has expressed that they may want a full visual redesign after the core
-  features are implemented. All visual code is isolated to:
-    - frontend/app/globals.css          (design tokens, animations)
-    - frontend/components/LandingPageClient.tsx  (landing page)
-    - frontend/app/dashboard/page.tsx   (dashboard layout)
-  Redesign can be done without touching any backend or auth logic.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-11. DEVELOPMENT COMMANDS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  Start Backend (Terminal 1):
-    cd backend
-    npm run dev
-    → Runs on http://localhost:5000
-
-  Start Frontend (Terminal 2):
-    cd frontend
-    npm run dev
-    → Runs on http://localhost:3000
-
-  Seed Knowledge Base (after adding OPENAI_API_KEY):
-    cd backend
-    npm run seed:rules
-
-  TypeScript Check:
-    cd backend && npx tsc --noEmit
-    cd frontend && npx tsc --noEmit
-
-  Push to GitHub (only when user explicitly asks):
-    git add .
-    git commit -m "..."
-    git push origin master
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-12. KEY ARCHITECTURAL DECISIONS & CONSTRAINTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  - Auth: Backend-managed JWT. Cookie name: 'access_token'. HttpOnly, SameSite=Strict.
-    The frontend reads auth state by calling GET /api/auth/me.
-    The proxy.ts only checks for cookie *presence* — the actual JWT is verified by the backend.
-
-  - Supabase: Use anon key only. All data access is mediated by RLS policies.
-    NEVER use the service_role key in this app.
-
-  - Embeddings: The 'embedding' column in code_chunks and security_rules is vector(1536).
-    This matches text-embedding-3-small's output dimension exactly.
-
-  - Ingestion is async: Both GitHub and upload routes return HTTP 202 immediately.
-    The actual chunking/embedding work happens in a background IIFE after the response is sent.
-    Poll /api/ingest/status/:repoId to check completion.
-
-  - Chunker does NOT use an AST parser (no Tree-sitter). It uses brace-depth tracking.
-    This is fast and language-agnostic but may occasionally mis-detect block boundaries
-    in files with complex nesting (e.g., deeply nested ternaries, template literals).
-
-  - CSS / Next.js 16 quirks:
-    * Use proxy.ts (NOT middleware.ts). Export function must be named `proxy`.
-    * No @import url() after @import "tailwindcss" in globals.css — Tailwind v4
-      expands the import into real CSS rules, making subsequent @import invalid.
-    * Fonts must be loaded via next/font, not Google Fonts @import.
-
-  - Git: Only push when user explicitly requests it. OPENAI_API_KEY is in .env which is gitignored.
-
-================================================================================
+5. DEVELOPMENT COMMANDS
+  - Start Backend: `cd backend && npm run dev`
+  - Start Frontend: `cd frontend && npm run dev`
+  - Seed Rules: `cd backend && npm run seed:rules`
+  - Typecheck: `npx tsc --noEmit` (run in either backend/ or frontend/ directory)

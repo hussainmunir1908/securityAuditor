@@ -30,3 +30,19 @@ export const supabase: SupabaseClient = createClient(
     },
   }
 );
+
+/**
+ * Admin Supabase client instance.
+ * Bypasses RLS. Used for internal operations like RAG querying that need to
+ * bypass user-specific RLS policies.
+ */
+export const supabaseAdmin: SupabaseClient = createClient(
+  env.SUPABASE_URL,
+  env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  }
+);

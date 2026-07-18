@@ -21,6 +21,7 @@ interface Env {
   // Supabase — anon/publishable key is safe on backend for DB access
   SUPABASE_URL: string;
   SUPABASE_PUBLISHABLE_KEY: string;
+  SUPABASE_SERVICE_ROLE_KEY: string;
 
   // GitHub OAuth Application credentials
   GITHUB_CLIENT_ID: string;
@@ -35,8 +36,10 @@ interface Env {
   // The frontend URL — used for post-auth redirects
   FRONTEND_URL: string;
 
-  // OpenAI API Key for embeddings and LLM analysis (optional for now)
-  OPENAI_API_KEY?: string;
+  // Hugging Face API Key — used for embeddings (all-MiniLM-L6-v2) and
+  // will be used in Step 3 for Qwen2.5-Coder-7B-Instruct SAST analysis.
+  // Optional: falls back to mock zero-vectors when absent.
+  HUGGING_FACE_API_KEY?: string;
 }
 
 /**
@@ -63,6 +66,7 @@ export const env: Env = {
 
   SUPABASE_URL: requireEnv('NEXT_PUBLIC_SUPABASE_URL'),
   SUPABASE_PUBLISHABLE_KEY: requireEnv('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'),
+  SUPABASE_SERVICE_ROLE_KEY: requireEnv('SUPABASE_SERVICE_ROLE_KEY'),
 
   GITHUB_CLIENT_ID: requireEnv('GITHUB_CLIENT_ID'),
   GITHUB_CLIENT_SECRET: requireEnv('GITHUB_CLIENT_SECRET'),
@@ -76,5 +80,5 @@ export const env: Env = {
 
   FRONTEND_URL: process.env['FRONTEND_URL'] ?? 'http://localhost:3000',
 
-  OPENAI_API_KEY: process.env['OPENAI_API_KEY'],
+  HUGGING_FACE_API_KEY: process.env['HUGGING_FACE_API_KEY'],
 };

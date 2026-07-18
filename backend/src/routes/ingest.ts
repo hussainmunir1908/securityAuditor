@@ -1,194 +1,211 @@
 /**
  * src/routes/ingest.ts
  * --------------------
- * Repository Ingestion API.
- * Handles cloning GitHub repositories and parsing them for the RAG knowledge base.
+ * Repository Ingestion API — Single-repo-at-a-time design.
+ *
+ * Routes:
+ *   POST /api/ingest/register          ← Submit a GitHub URL (clears old data, creates repo, starts ingestion + auto-scan)
+ *   GET  /api/ingest/active            ← Returns the single active repo and its status
+ *   GET  /api/ingest/status/:repoId    ← Poll ingestion/scan progress
+ *   GET  /api/ingest/repositories      ← List all repos for current user (kept for backward compat)
  */
 
 import { Router, Request, Response } from 'express';
-import { Octokit } from '@octokit/rest';
 import { requireAuth } from '../middleware/auth';
 import { supabase } from '../config/supabase';
-import { structurallyChunkFile } from '../utils/chunker';
-import { generateEmbedding } from '../utils/embeddings';
+import { launchIngestion } from '../utils/ingestionRunner';
 
 const router = Router();
 router.use(requireAuth);
 
-// Helper to determine file language from extension
-function getLanguageFromFilename(filename: string): string {
-  const ext = filename.split('.').pop()?.toLowerCase() || '';
-  const map: Record<string, string> = {
-    'ts': 'typescript', 'tsx': 'typescript',
-    'js': 'javascript', 'jsx': 'javascript',
-    'py': 'python',
-    'java': 'java',
-    'c': 'c', 'cpp': 'cpp', 'cc': 'cpp', 'h': 'c', 'hpp': 'cpp',
-    'cs': 'csharp',
-    'go': 'go',
-    'rb': 'ruby',
-    'php': 'php',
-    'sql': 'sql',
-    'json': 'json',
-    'md': 'markdown'
-  };
-  return map[ext] || 'unknown';
-}
-
-// Extensions we want to ignore (binaries, lockfiles, media)
-const IGNORED_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'pdf', 'zip', 'tar', 'gz', 'mp4', 'mp3', 'wav', 'lock'];
-const IGNORED_DIRECTORIES = ['node_modules', 'dist', 'build', '.git', '.next'];
+// ─── POST /api/ingest/register ────────────────────────────────────────────────
 
 /**
- * POST /api/ingest/github
- * Accepts a repositoryId, fetches it from GitHub, chunks files, and generates embeddings.
+ * Primary entry point from the frontend.
+ * 
+ * SINGLE-REPO DESIGN:
+ *   1. Deletes ALL existing scan_results, code_chunks, and repositories for this user.
+ *   2. Creates a fresh repository record.
+ *   3. Kicks off ingestion (which auto-triggers scanning when done).
+ *
+ * Body:   { repoUrl: "owner/repo" | "https://github.com/owner/repo" }
+ * Returns: { repositoryId, message }
  */
-router.post('/github', async (req: Request, res: Response): Promise<void> => {
+router.post('/register', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { repositoryId } = req.body;
-    const userId = req.user?.id; // from requireAuth
+    const { repoUrl } = req.body as { repoUrl?: string };
+    const profileId = req.user?.id;
 
-    if (!repositoryId || !userId) {
-      res.status(400).json({ error: 'Missing repositoryId or unauthenticated user.' });
+    if (!repoUrl || !profileId) {
+      res.status(400).json({ error: 'Missing required field: repoUrl.' });
       return;
     }
 
-    // 1. Fetch Repo and Profile info
-    const { data: repo, error: repoError } = await supabase
+    // Normalise: strip https://github.com/ prefix if the user pasted a full URL
+    const normalised = repoUrl
+      .replace(/^https?:\/\/github\.com\//i, '')
+      .replace(/\.git$/, '')
+      .trim();
+
+    const parts = normalised.split('/');
+    if (parts.length < 2 || !parts[0] || !parts[1]) {
+      res.status(400).json({
+        error: 'Invalid repoUrl. Expected format: owner/repo or https://github.com/owner/repo',
+      });
+      return;
+    }
+    const repoName = `${parts[0]}/${parts[1]}`;
+
+    // ── SINGLE-REPO: Clear ALL old data for this user ─────────────────────────
+    console.log(`[ingest/register] 🧹 Clearing old data for profile ${profileId}...`);
+
+    // Delete in order: scan_results → code_chunks → repositories (FK dependencies)
+    const { data: existingRepos } = await supabase
       .from('repositories')
-      .select('*')
-      .eq('id', repositoryId)
+      .select('id')
+      .eq('profile_id', profileId);
+
+    if (existingRepos && existingRepos.length > 0) {
+      const repoIds = existingRepos.map(r => r.id);
+      for (const rid of repoIds) {
+        await supabase.from('scan_results').delete().eq('repository_id', rid);
+        await supabase.from('code_chunks').delete().eq('repository_id', rid);
+      }
+      await supabase.from('repositories').delete().eq('profile_id', profileId);
+      console.log(`[ingest/register] 🧹 Cleared ${repoIds.length} old repo(s) and their data.`);
+    }
+
+    // ── Create new repository record ──────────────────────────────────────────
+    const { data: newRepo, error: createError } = await supabase
+      .from('repositories')
+      .insert({
+        profile_id:       profileId,
+        repo_name:        repoName,
+        github_repo_url:  `https://github.com/${repoName}`,
+        default_branch:   'main',
+        ingestion_status: 'processing',
+      })
+      .select('id')
       .single();
 
-    if (repoError || !repo) {
-      res.status(404).json({ error: 'Repository not found.' });
+    if (createError || !newRepo) {
+      console.error('[ingest/register] DB insert failed:', createError?.message);
+      res.status(500).json({ error: 'Failed to create repository record.', detail: createError?.message });
       return;
     }
 
-    const { data: profile, error: profileError } = await supabase
+    // ── Fetch GitHub token ────────────────────────────────────────────────────
+    const { data: profile } = await supabase
       .from('profiles')
       .select('github_access_token')
-      .eq('id', userId)
+      .eq('id', profileId)
       .single();
 
-    if (profileError || !profile?.github_access_token) {
-      res.status(403).json({ error: 'GitHub access token not found for user.' });
+    if (!profile?.github_access_token) {
+      await supabase.from('repositories').update({ ingestion_status: 'failed' }).eq('id', newRepo.id);
+      res.status(403).json({ error: 'GitHub access token not found. Please log out and log back in.' });
       return;
     }
 
-    // 2. Set status to processing
-    await supabase.from('repositories').update({ ingestion_status: 'processing' }).eq('id', repositoryId);
+    // ── Respond immediately, then start ingestion in the background ───────────
+    console.log(`[ingest/register] 🚀 Starting ingestion + auto-scan for "${repoName}"`);
 
-    // Return early to the client so they don't wait for the long ingestion process
-    res.status(202).json({ message: 'Ingestion started.', repositoryId });
+    res.status(202).json({
+      message: 'Repository registered. Ingestion and scanning started.',
+      repositoryId: newRepo.id,
+    });
 
-    // 3. Kick off async ingestion
-    (async () => {
-      try {
-        const octokit = new Octokit({ auth: profile.github_access_token });
-        
-        // repo.repo_name should be formatted as "owner/repo"
-        const [owner, repoName] = repo.repo_name.split('/');
-        if (!owner || !repoName) {
-          throw new Error('Invalid repository name format. Expected "owner/repo".');
-        }
-
-        // Fetch repository tree recursively
-        const { data: commit } = await octokit.repos.getCommit({
-          owner,
-          repo: repoName,
-          ref: 'HEAD'
-        });
-        const treeSha = commit.commit.tree.sha;
-
-        const { data: tree } = await octokit.git.getTree({
-          owner,
-          repo: repoName,
-          tree_sha: treeSha,
-          recursive: 'true'
-        });
-
-        const filesToProcess = tree.tree.filter(item => {
-          if (item.type !== 'blob') return false;
-          if (!item.path) return false;
-          
-          const pathSegments = item.path.split('/');
-          const filename = pathSegments[pathSegments.length - 1];
-          const ext = filename.split('.').pop()?.toLowerCase() || '';
-
-          // Filter out ignored extensions and directories
-          if (IGNORED_EXTENSIONS.includes(ext)) return false;
-          if (pathSegments.some(segment => IGNORED_DIRECTORIES.includes(segment))) return false;
-
-          return true;
-        });
-
-        // 4. Process each file
-        for (const fileNode of filesToProcess) {
-          try {
-             // Fetch file content
-             const { data: blob } = await octokit.git.getBlob({
-               owner,
-               repo: repoName,
-               file_sha: fileNode.sha!
-             });
-
-             const content = Buffer.from(blob.content, 'base64').toString('utf8');
-             const language = getLanguageFromFilename(fileNode.path!);
-
-             // 5. Chunk the file
-             const chunks = structurallyChunkFile(content, language);
-
-             // 6. Generate embeddings and store
-             for (let i = 0; i < chunks.length; i++) {
-               const chunk = chunks[i];
-               const embedding = await generateEmbedding(chunk.content);
-
-               await supabase.from('code_chunks').insert({
-                 repository_id: repositoryId,
-                 file_path: fileNode.path,
-                 start_line: chunk.startLine,
-                 end_line: chunk.endLine,
-                 content: chunk.content,
-                 language: language,
-                 chunk_index: i,
-                 embedding: embedding
-               });
-             }
-          } catch (fileErr) {
-            console.error(`Error processing file ${fileNode.path}:`, fileErr);
-            // Continue processing other files
-          }
-        }
-
-        // 7. Mark as completed
-        await supabase.from('repositories').update({ ingestion_status: 'completed' }).eq('id', repositoryId);
-        console.log(`✅ Ingestion completed for repository ${repo.repo_name}`);
-
-      } catch (ingestErr) {
-        console.error('Ingestion process failed:', ingestErr);
-        await supabase.from('repositories').update({ ingestion_status: 'failed' }).eq('id', repositoryId);
-      }
-    })();
+    // launchIngestion now auto-triggers scan after ingestion completes
+    launchIngestion(newRepo.id, profileId!, repoName, profile.github_access_token);
 
   } catch (error) {
-    console.error('Error in /api/ingest/github handler:', error);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Internal Server Error' });
-    }
+    console.error('[ingest/register] Unexpected error:', error);
+    if (!res.headersSent) res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
+// ─── GET /api/ingest/active ──────────────────────────────────────────────────
+
 /**
- * GET /api/ingest/status/:jobId
- * Returns the current status of an ingestion job (the repository).
+ * Returns the single active repository for this user (if any),
+ * along with chunk count and scan result count for progress tracking.
  */
+router.get('/active', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const profileId = req.user?.id;
+    if (!profileId) {
+      res.status(401).json({ error: 'Unauthenticated.' });
+      return;
+    }
+
+    const { data: repo, error } = await supabase
+      .from('repositories')
+      .select('*')
+      .eq('profile_id', profileId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    if (!repo) {
+      res.json({ repository: null });
+      return;
+    }
+
+    // Get chunk count for progress display
+    const { count: chunkCount } = await supabase
+      .from('code_chunks')
+      .select('id', { count: 'exact', head: true })
+      .eq('repository_id', repo.id);
+
+    // Get scan results count
+    const { count: findingsCount } = await supabase
+      .from('scan_results')
+      .select('id', { count: 'exact', head: true })
+      .eq('repository_id', repo.id);
+
+    // Determine pipeline stage for the frontend:
+    // - 'ingesting': ingestion_status === 'processing'
+    // - 'scanning':  ingestion is done but last_scanned_at not yet set
+    // - 'completed': ingestion done and last_scanned_at is set
+    // - 'failed':    ingestion_status === 'failed'
+    let pipelineStage: 'ingesting' | 'scanning' | 'completed' | 'failed';
+    if (repo.ingestion_status === 'processing') {
+      pipelineStage = 'ingesting';
+    } else if (repo.ingestion_status === 'failed') {
+      pipelineStage = 'failed';
+    } else if (repo.last_scanned_at) {
+      pipelineStage = 'completed';
+    } else {
+      // ingestion completed, scan not yet finished
+      pipelineStage = 'scanning';
+    }
+
+    res.json({
+      repository: {
+        ...repo,
+        chunk_count: chunkCount ?? 0,
+        findings_count: findingsCount ?? 0,
+        pipeline_stage: pipelineStage,
+      },
+    });
+  } catch {
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// ─── GET /api/ingest/status/:repositoryId ─────────────────────────────────────
+
 router.get('/status/:repositoryId', async (req: Request, res: Response): Promise<void> => {
   try {
-    const { repositoryId } = req.params;
+    const repositoryId = req.params['repositoryId'] as string;
     const { data, error } = await supabase
       .from('repositories')
-      .select('ingestion_status')
+      .select('ingestion_status, repo_name, last_scanned_at')
       .eq('id', repositoryId)
       .single();
 
@@ -197,36 +214,52 @@ router.get('/status/:repositoryId', async (req: Request, res: Response): Promise
       return;
     }
 
-    res.json({ status: data.ingestion_status });
-  } catch (err) {
+    // Also get progress info
+    const { count: chunkCount } = await supabase
+      .from('code_chunks')
+      .select('id', { count: 'exact', head: true })
+      .eq('repository_id', repositoryId);
+
+    const { count: findingsCount } = await supabase
+      .from('scan_results')
+      .select('id', { count: 'exact', head: true })
+      .eq('repository_id', repositoryId);
+
+    res.json({
+      status: data.ingestion_status,
+      repoName: data.repo_name,
+      lastScannedAt: data.last_scanned_at,
+      chunkCount: chunkCount ?? 0,
+      findingsCount: findingsCount ?? 0,
+    });
+  } catch {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-/**
- * GET /api/ingest/repositories
- * Lists all repositories that have been ingested by the current user.
- */
+// ─── GET /api/ingest/repositories ─────────────────────────────────────────────
+
 router.get('/repositories', async (req: Request, res: Response): Promise<void> => {
-   try {
-    const userId = req.user?.id;
-    if (!userId) {
-       res.status(401).json({ error: 'Unauthenticated.' });
-       return;
+  try {
+    const profileId = req.user?.id;
+    if (!profileId) {
+      res.status(401).json({ error: 'Unauthenticated.' });
+      return;
     }
 
     const { data, error } = await supabase
       .from('repositories')
       .select('*')
-      .eq('user_id', userId);
+      .eq('profile_id', profileId)
+      .order('created_at', { ascending: false });
 
     if (error) {
-      res.status(500).json({ error: 'Database error fetching repositories.' });
+      res.status(500).json({ error: 'Database error.' });
       return;
     }
 
-    res.json({ repositories: data });
-  } catch (err) {
+    res.json({ repositories: data ?? [] });
+  } catch {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

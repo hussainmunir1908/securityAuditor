@@ -24,6 +24,7 @@ import authRouter from './routes/auth';
 import ingestRouter from './routes/ingest';
 import uploadRouter from './routes/upload';
 import scanRouter from './routes/scan';
+import { supabase } from './config/supabase';
 
 const app: Application = express();
 
@@ -106,6 +107,37 @@ app.use((err: Error, _req: Request, res: Response, _next: NextFunction): void =>
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 
+/**
+ * Startup Recovery — reset any repos stuck in 'processing' from a previous
+ * server instance (e.g., ts-node-dev restart during a long ingestion job).
+ *
+ * Without this, a restart mid-ingestion leaves repos permanently stuck.
+ * We mark them 'failed' so the user can see they need to retry.
+ */
+async function recoverStuckJobs(): Promise<void> {
+  try {
+    const { data, error } = await supabase
+      .from('repositories')
+      .update({ ingestion_status: 'failed' })
+      .eq('ingestion_status', 'processing')
+      .select('repo_name');
+
+    if (error) {
+      console.warn('[startup] Could not reset stuck jobs:', error.message);
+      return;
+    }
+    if (data && data.length > 0) {
+      console.warn(
+        `[startup] Reset ${data.length} stuck ingestion job(s) to 'failed': ` +
+        data.map((r: { repo_name: string }) => r.repo_name).join(', ')
+      );
+      console.warn('[startup] Users can retry these from the dashboard.');
+    }
+  } catch (err) {
+    console.warn('[startup] Recovery check failed:', err);
+  }
+}
+
 app.listen(env.PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════════════╗
@@ -115,6 +147,9 @@ app.listen(env.PORT, () => {
 ║   Frontend    : ${env.FRONTEND_URL.padEnd(35)}║
 ╚══════════════════════════════════════════════════════╝
   `);
+
+  // Run recovery after server is ready — non-blocking
+  void recoverStuckJobs();
 });
 
 export default app;

@@ -89,6 +89,47 @@ export interface ScanResult {
   created_at: string;
 }
 
+/** Shape of a row in the `code_chunks` table */
+export interface CodeChunk {
+  id: string;
+  repository_id: string;
+  profile_id: string;
+  file_path: string;
+  start_line: number;
+  end_line: number;
+  content: string;
+  language: string | null;
+  chunk_index: number;
+  embedding: number[];          // 384-dimensional vector
+  created_at: string;
+}
+
+/** Shape of a row in the `security_rules` table */
+export interface SecurityRule {
+  id: string;
+  rule_id: string;
+  title: string;
+  content: string;
+  severity: string;
+  owasp_category: string | null;
+  cwe_id: string | null;
+  // embedding is omitted here — we don't need to deserialise it client-side
+}
+
+/**
+ * A single vulnerability finding produced by the LLM analyzer.
+ * This is the parsed JSON output from Qwen before it is persisted
+ * into the `scan_results` table.
+ */
+export interface ScanFinding {
+  rule_id: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  description: string;
+  remediation: string;
+  line_number: number | null;
+  snippet: string | null;
+}
+
 // ─── Express Request Augmentation ─────────────────────────────────────────────
 
 /**

@@ -57,7 +57,7 @@ router.post('/', upload.single('file'), async (req: Request, res: Response): Pro
   try {
     const file = req.file;
     const { repositoryName } = req.body;
-    const userId = req.user?.id;
+    const profileId = req.user?.id; // profiles.id from JWT
 
     if (!file) {
       res.status(400).json({ error: 'No file uploaded.' });
@@ -78,9 +78,10 @@ router.post('/', upload.single('file'), async (req: Request, res: Response): Pro
     const { data: repoData, error: repoError } = await supabase
       .from('repositories')
       .insert({
-         user_id: userId,
+         profile_id: profileId,           // FK → profiles.id
          repo_name: repositoryName,
-         repo_url: 'local-upload',
+         github_repo_url: 'local-upload', // required NOT NULL in schema
+         default_branch: 'main',          // required NOT NULL in schema
          ingestion_status: 'processing'
       })
       .select('id')
@@ -129,6 +130,7 @@ router.post('/', upload.single('file'), async (req: Request, res: Response): Pro
 
                await supabase.from('code_chunks').insert({
                  repository_id: repositoryId,
+                 profile_id: profileId,    // required NOT NULL FK in real schema
                  file_path: zipEntry.entryName,
                  start_line: chunk.startLine,
                  end_line: chunk.endLine,

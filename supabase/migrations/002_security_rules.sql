@@ -30,6 +30,12 @@ CREATE POLICY "Authenticated users can read security rules"
   TO authenticated
   USING (true);
 
+-- Allow backend (or setup scripts) to insert rules
+CREATE POLICY "Backend can insert security rules"
+  ON public.security_rules
+  FOR INSERT
+  WITH CHECK (true);
+
 -- Index for fast vector similarity search using HNSW
 -- Note: Requires pgvector extension (which was enabled in 001_init.sql)
 CREATE INDEX IF NOT EXISTS idx_security_rules_embedding 
