@@ -169,8 +169,8 @@ export function parseVulnerabilityBlocks(raw: string): ScanFinding[] {
     return [];
   }
 
-  // Split by double blank lines (or multiple) to isolate blocks
-  const blocks = trimmed.split(/\n\s*\n+/);
+  // Split by "VULNERABILITY:" to isolate blocks, handling any leading text
+  const blocks = trimmed.split(/(?=VULNERABILITY:\s*)/i).filter(b => b.trim().length > 0);
   const findings: ScanFinding[] = [];
 
   for (const block of blocks) {

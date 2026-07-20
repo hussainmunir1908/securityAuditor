@@ -12,6 +12,7 @@
  */
 
 import { Octokit } from '@octokit/rest';
+import pLimit from 'p-limit';
 import { supabase } from '../config/supabase';
 import { structurallyChunkFile } from './chunker';
 import { generateEmbeddingWithTimeout } from './embeddings';
@@ -90,6 +91,10 @@ export async function runIngestion(
   console.log(`[ingestion] ▶ Starting: ${repoName} (repo: ${repositoryId})`);
   console.log(`${'═'.repeat(70)}`);
 
+  const limit = pLimit(2);
+  const scanPromises: Promise<void>[] = [];
+  const allFindings: Array<ScanFinding & { file_path: string; start_line: number; ai_prompt: string | null }> = [];
+
   try {
     const octokit = new Octokit({ auth: githubToken });
     const [owner, repo] = repoName.split('/');
@@ -149,8 +154,9 @@ export async function runIngestion(
       return;
     }
 
-    // ── Step 2: Clear old chunks for this repo ──────────────────────────────
+    // ── Step 2: Clear old chunks & findings for this repo ───────────────────
     await supabase.from('code_chunks').delete().eq('repository_id', repositoryId);
+    await supabase.from('scan_results').delete().eq('repository_id', repositoryId);
 
     // ── Step 3: Process files ───────────────────────────────────────────────
     let filesProcessed = 0;
@@ -175,7 +181,7 @@ export async function runIngestion(
           const chunk = chunks[i];
           const embedding = await generateEmbeddingWithTimeout(chunk.content);
 
-          const { error: insertErr } = await supabase.from('code_chunks').insert({
+          const { data: insertedChunk, error: insertErr } = await supabase.from('code_chunks').insert({
             repository_id: repositoryId,
             profile_id:    profileId,
             file_path:     fileNode.path,
@@ -185,12 +191,32 @@ export async function runIngestion(
             language,
             chunk_index:   i,
             embedding,
-          });
+          }).select().single();
 
-          if (insertErr) {
-            console.error(`[ingestion] Insert failed for ${fileNode.path}[${i}]: ${insertErr.message}`);
+          if (insertErr || !insertedChunk) {
+            console.error(`[ingestion] Insert failed for ${fileNode.path}[${i}]: ${insertErr?.message}`);
           } else {
             totalChunks++;
+            
+            // Consumer: Queue the chunk for scanning immediately
+            scanPromises.push(limit(async () => {
+              try {
+                const result = await runScanForChunk(insertedChunk as CodeChunk);
+                if (result.findings.length > 0) {
+                  console.log(`[auto-scan] ${insertedChunk.file_path}:${insertedChunk.start_line} → ${result.findings.length} finding(s)`);
+                }
+                for (const f of result.findings) {
+                  allFindings.push({
+                    ...f,
+                    file_path:  insertedChunk.file_path,
+                    start_line: insertedChunk.start_line,
+                    ai_prompt:  result.aiPrompt,
+                  });
+                }
+              } catch (chunkErr) {
+                console.error(`[auto-scan] Failed to process chunk ${insertedChunk.id} (${insertedChunk.file_path}):`, chunkErr);
+              }
+            }));
           }
         }
 
@@ -205,94 +231,15 @@ export async function runIngestion(
       }
     }
 
-    // ── Step 4: Mark ingestion completed ─────────────────────────────────────
-    await supabase
-      .from('repositories')
-      .update({ ingestion_status: 'completed' })
-      .eq('id', repositoryId);
-
+    // ── Step 4: Wait for scans to finish ─────────────────────────────────────
     console.log(`\n${'─'.repeat(70)}`);
     console.log(`[ingestion] ✅ Ingestion complete: ${repoName} (${filesProcessed}/${filesToProcess.length} files, ${totalChunks} chunks)`);
-    console.log(`[ingestion] 🚀 Auto-starting SAST scan...`);
+    console.log(`[ingestion] ⏳ Waiting for scanner queue to finish (${scanPromises.length} chunks)...`);
     console.log(`${'─'.repeat(70)}\n`);
+    
+    await Promise.all(scanPromises);
 
-    // ── Step 5: AUTO-TRIGGER SCAN ────────────────────────────────────────────
-    await runAutoScan(repositoryId, profileId, repoName);
-
-  } catch (err) {
-    console.error(`[ingestion] ❌ Fatal error for ${repoName}:`, err);
-
-    const { error: updateErr } = await supabase
-      .from('repositories')
-      .update({ ingestion_status: 'failed' })
-      .eq('id', repositoryId);
-
-    if (updateErr) {
-      console.error(`[ingestion] CRITICAL: Could not set failed status: ${updateErr.message}`);
-    }
-  }
-}
-
-/**
- * Runs the full multi-agent SAST scan on all code_chunks for a repository.
- * Called automatically after ingestion completes.
- */
-async function runAutoScan(
-  repositoryId: string,
-  profileId: string,
-  repoName: string
-): Promise<void> {
-  try {
-    // Clear any previous scan results
-    await supabase.from('scan_results').delete().eq('repository_id', repositoryId);
-
-    // Fetch all code chunks
-    const { data: chunks, error: chunksError } = await supabase
-      .from('code_chunks')
-      .select('*')
-      .eq('repository_id', repositoryId);
-
-    if (chunksError || !chunks || chunks.length === 0) {
-      console.error(`[auto-scan] No chunks to scan for ${repoName}.`);
-      return;
-    }
-
-    console.log(`[auto-scan] 🔬 Scanning ${chunks.length} chunks for "${repoName}"...`);
-
-    const allFindings: Array<ScanFinding & { file_path: string; start_line: number; ai_prompt: string | null }> = [];
-
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i] as CodeChunk;
-      try {
-        const result = await runScanForChunk(chunk);
-        const findings = result.findings;
-
-        for (const f of findings) {
-          allFindings.push({
-            ...f,
-            file_path:  chunk.file_path,
-            start_line: chunk.start_line,
-            ai_prompt:  result.aiPrompt,
-          });
-        }
-
-        if (findings.length > 0) {
-          console.log(
-            `[auto-scan] ${chunk.file_path}:${chunk.start_line} → ` +
-            `${findings.length} finding(s)`
-          );
-        }
-
-        // Progress log every 10 chunks
-        if ((i + 1) % 10 === 0 || i === chunks.length - 1) {
-          console.log(`[auto-scan] Progress: ${i + 1}/${chunks.length} chunks scanned, ${allFindings.length} findings so far`);
-        }
-      } catch (chunkErr) {
-        console.error(`[auto-scan] Failed to process chunk ${chunk.id} (${chunk.file_path}):`, chunkErr);
-      }
-    }
-
-    // Bulk insert findings
+    // ── Step 5: Bulk Insert Findings & Mark Completed ────────────────────────
     if (allFindings.length > 0) {
       const rows = allFindings.map(f => ({
         repository_id: repositoryId,
@@ -309,23 +256,18 @@ async function runAutoScan(
         confidence:    f.confidence ?? null,
       }));
 
-      // Insert in batches of 50 to avoid request size limits
       for (let j = 0; j < rows.length; j += 50) {
         const batch = rows.slice(j, j + 50);
-        const { error: insertError } = await supabase
-          .from('scan_results')
-          .insert(batch);
-
+        const { error: insertError } = await supabase.from('scan_results').insert(batch);
         if (insertError) {
           console.error(`[auto-scan] Failed to insert batch ${j}:`, insertError.message);
         }
       }
     }
 
-    // Update last_scanned_at
     await supabase
       .from('repositories')
-      .update({ last_scanned_at: new Date().toISOString() })
+      .update({ ingestion_status: 'completed', last_scanned_at: new Date().toISOString() })
       .eq('id', repositoryId);
 
     console.log(`\n${'═'.repeat(70)}`);
@@ -333,7 +275,16 @@ async function runAutoScan(
     console.log(`${'═'.repeat(70)}\n`);
 
   } catch (err) {
-    console.error(`[auto-scan] ❌ Fatal error during scan of ${repoName}:`, err);
+    console.error(`[ingestion] ❌ Fatal error for ${repoName}:`, err);
+
+    const { error: updateErr } = await supabase
+      .from('repositories')
+      .update({ ingestion_status: 'failed' })
+      .eq('id', repositoryId);
+
+    if (updateErr) {
+      console.error(`[ingestion] CRITICAL: Could not set failed status: ${updateErr.message}`);
+    }
   }
 }
 

@@ -16,7 +16,7 @@ import { SecurityRule } from '../types';
 
 // Number of security rules to retrieve per chunk.
 // 5 rules gives the LLM enough context without overflowing its context window.
-const TOP_K = 5;
+const TOP_K = 10;
 
 /**
  * Retrieves the top-K most relevant security rules for a given embedding.
